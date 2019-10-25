@@ -16,9 +16,10 @@ package brave.kafka.clients;
 import brave.Span;
 import brave.Tracer;
 import brave.internal.Nullable;
+import brave.messaging.ChannelAdapter;
+import brave.messaging.MessageProducerAdapter;
+import brave.messaging.MessagingProducerHandler;
 import brave.propagation.CurrentTraceContext;
-import brave.propagation.TraceContext;
-import brave.propagation.TraceContext.Injector;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -33,23 +34,27 @@ import org.apache.kafka.common.Metric;
 import org.apache.kafka.common.MetricName;
 import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
-import org.apache.kafka.common.header.Headers;
 
-final class TracingProducer<K, V> implements Producer<K, V> {
+final class TracingProducer<K, V>
+  extends MessagingProducerHandler<Producer<K, V>, ProducerRecord<K, V>, ProducerRecord<K, V>>
+  implements Producer<K, V> {
 
-  final Producer<K, V> delegate;
   final KafkaTracing kafkaTracing;
   final CurrentTraceContext current;
   final Tracer tracer;
-  final Injector<Headers> injector;
   @Nullable final String remoteServiceName;
 
   TracingProducer(Producer<K, V> delegate, KafkaTracing kafkaTracing) {
-    this.delegate = delegate;
+    super(
+      delegate,
+      kafkaTracing.msgTracing,
+      KafkaProducerAdapter.create(kafkaTracing),
+      KafkaProducerAdapter.create(kafkaTracing),
+      kafkaTracing.producerRecordExtractor(),
+      kafkaTracing.producerRecordInjector());
     this.kafkaTracing = kafkaTracing;
-    this.current = kafkaTracing.tracing.currentTraceContext();
-    this.tracer = kafkaTracing.tracing.tracer();
-    this.injector = kafkaTracing.injector;
+    this.current = kafkaTracing.msgTracing.tracing().currentTraceContext();
+    this.tracer = kafkaTracing.msgTracing.tracing().tracer();
     this.remoteServiceName = kafkaTracing.remoteServiceName;
   }
 
@@ -87,31 +92,7 @@ final class TracingProducer<K, V> implements Producer<K, V> {
   // TODO: make b3single an option and then note how using this minimizes overhead
   @Override
   public Future<RecordMetadata> send(ProducerRecord<K, V> record, @Nullable Callback callback) {
-    TraceContext maybeParent = current.get();
-    // Unlike message consumers, we try current span before trying extraction. This is the proper
-    // order because the span in scope should take precedence over a potentially stale header entry.
-    //
-    // NOTE: Brave instrumentation used properly does not result in stale header entries, as we
-    // always clear message headers after reading.
-    Span span;
-    if (maybeParent == null) {
-      span = tracer.nextSpan(kafkaTracing.extractAndClearHeaders(record.headers()));
-    } else {
-      // If we have a span in scope assume headers were cleared before
-      span = tracer.newChild(maybeParent);
-    }
-
-    if (!span.isNoop()) {
-      span.kind(Span.Kind.PRODUCER).name("send");
-      if (remoteServiceName != null) span.remoteServiceName(remoteServiceName);
-      if (record.key() instanceof String && !"".equals(record.key())) {
-        span.tag(KafkaTags.KAFKA_KEY_TAG, record.key().toString());
-      }
-      span.tag(KafkaTags.KAFKA_TOPIC_TAG, record.topic());
-      span.start();
-    }
-
-    injector.inject(span.context(), record.headers());
+    Span span = handleProduce(record, record);
 
     try (Tracer.SpanInScope ws = tracer.withSpanInScope(span)) {
       return delegate.send(record, TracingCallback.create(callback, span, current));
@@ -151,5 +132,87 @@ final class TracingProducer<K, V> implements Producer<K, V> {
   public void sendOffsetsToTransaction(Map<TopicPartition, OffsetAndMetadata> offsets,
     String consumerGroupId) {
     delegate.sendOffsetsToTransaction(offsets, consumerGroupId);
+  }
+
+  /**
+   * Decorates, then finishes a producer span. Allows tracing to record the duration between
+   * batching for send and actual send.
+   */
+  static final class TracingCallback {
+    static Callback create(@Nullable Callback delegate, Span span, CurrentTraceContext current) {
+      if (span.isNoop()) return delegate; // save allocation overhead
+      if (delegate == null) return new FinishSpan(span);
+      return new DelegateAndFinishSpan(delegate, span, current);
+    }
+
+    static class FinishSpan implements Callback {
+      final Span span;
+
+      FinishSpan(Span span) {
+        this.span = span;
+      }
+
+      @Override public void onCompletion(RecordMetadata metadata, @Nullable Exception exception) {
+        if (exception != null) span.error(exception);
+        span.finish();
+      }
+    }
+
+    static final class DelegateAndFinishSpan extends FinishSpan {
+      final Callback delegate;
+      final CurrentTraceContext current;
+
+      DelegateAndFinishSpan(Callback delegate, Span span, CurrentTraceContext current) {
+        super(span);
+        this.delegate = delegate;
+        this.current = current;
+      }
+
+      @Override public void onCompletion(RecordMetadata metadata, @Nullable Exception exception) {
+        try (CurrentTraceContext.Scope ws = current.maybeScope(span.context())) {
+          delegate.onCompletion(metadata, exception);
+        } finally {
+          super.onCompletion(metadata, exception);
+        }
+      }
+    }
+  }
+
+  static final class KafkaProducerAdapter<K, V> implements
+    MessageProducerAdapter<ProducerRecord<K, V>>,
+    ChannelAdapter<ProducerRecord<K, V>> {
+    final KafkaTracing kafkaTracing;
+
+    KafkaProducerAdapter(KafkaTracing kafkaTracing) {
+      this.kafkaTracing = kafkaTracing;
+    }
+
+    static <K, V> KafkaProducerAdapter<K, V> create(KafkaTracing kafkaTracing) {
+      return new KafkaProducerAdapter<>(kafkaTracing);
+    }
+
+    @Override public String channel(ProducerRecord message) {
+      return message.topic();
+    }
+
+    @Override public String operation(ProducerRecord message) {
+      return KafkaTracing.PRODUCER_OPERATION;
+    }
+
+    @Override public String identifier(ProducerRecord message) {
+      return kafkaTracing.recordKey(message.key());
+    }
+
+    @Override public String remoteServiceName(ProducerRecord message) {
+      return kafkaTracing.remoteServiceName;
+    }
+
+    @Override public String channelTagKey(ProducerRecord<K, V> message) {
+      return kafkaTracing.channelTagKey(message);
+    }
+
+    @Override public String identifierTagKey() {
+      return kafkaTracing.identifierTagKey();
+    }
   }
 }

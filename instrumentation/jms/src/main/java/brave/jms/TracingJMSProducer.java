@@ -14,11 +14,14 @@
 package brave.jms;
 
 import brave.Span;
+import brave.Tracer;
 import brave.Tracer.SpanInScope;
+import brave.messaging.MessageProducerAdapter;
+import brave.messaging.MessagingProducerHandler;
+import brave.propagation.CurrentTraceContext;
 import brave.propagation.Propagation.Getter;
+import brave.propagation.Propagation.Setter;
 import brave.propagation.TraceContext;
-import brave.propagation.TraceContext.Extractor;
-import brave.propagation.TraceContextOrSamplingFlags;
 import java.io.Serializable;
 import java.util.Map;
 import java.util.Set;
@@ -27,9 +30,11 @@ import javax.jms.Destination;
 import javax.jms.JMSProducer;
 import javax.jms.Message;
 
+import static brave.jms.JmsTracing.log;
 import static brave.propagation.B3SingleFormat.writeB3SingleFormatWithoutParentId;
 
-@JMS2_0 final class TracingJMSProducer extends TracingProducer<JMSProducer, JMSProducer>
+@JMS2_0 final class TracingJMSProducer
+  extends MessagingProducerHandler<JMSProducer, Destination, JMSProducer>
   implements JMSProducer {
 
   static final Getter<JMSProducer, String> GETTER = new Getter<JMSProducer, String>() {
@@ -42,23 +47,42 @@ import static brave.propagation.B3SingleFormat.writeB3SingleFormatWithoutParentI
     }
   };
 
-  final Extractor<JMSProducer> extractor;
+  static final Setter<JMSProducer, String> SETTER = new Setter<JMSProducer, String>() {
+    @Override public void put(JMSProducer message, String name, String value) {
+      try {
+        message.setProperty(name, value);
+      } catch (RuntimeException e) {
+        log(e, "error setting property {0} on message {1}", name, message);
+      }
+    }
+
+    @Override public String toString() {
+      return "Message::setStringProperty";
+    }
+  };
+
+  final Tracer tracer;
+  final CurrentTraceContext current;
 
   TracingJMSProducer(JMSProducer delegate, JmsTracing jmsTracing) {
-    super(delegate, jmsTracing);
-    this.extractor = jmsTracing.tracing.propagation().extractor(GETTER);
-  }
+    super(
+      delegate,
+      jmsTracing.msgTracing,
+      jmsTracing.channelAdapter,
+      JmsProducerAdapter.create(jmsTracing),
+      jmsTracing.msgTracing.tracing().propagation().extractor(GETTER),
+      new TraceContext.Injector<JMSProducer>() {
+        @Override public void inject(TraceContext traceContext, JMSProducer carrier) {
+          SETTER.put(carrier, "b3", writeB3SingleFormatWithoutParentId(traceContext));
+        }
 
-  @Override void addB3SingleHeader(JMSProducer message, TraceContext context) {
-    message.setProperty("b3", writeB3SingleFormatWithoutParentId(context));
-  }
-
-  @Override TraceContextOrSamplingFlags extract(JMSProducer message) {
-    return extractor.extract(message);
-  }
-
-  @Override Destination destination(JMSProducer producer) {
-    return null; // there's no implicit destination
+        @Override
+        public String toString() {
+          return "JMSProducer::setProperty(\"b3\",singleHeaderFormatWithoutParent)";
+        }
+      });
+    this.tracer = jmsTracing.msgTracing.tracing().tracer();
+    this.current = jmsTracing.msgTracing.tracing().currentTraceContext();
   }
 
   // Partial function pattern as this needs to work before java 8 method references
@@ -118,7 +142,7 @@ import static brave.propagation.B3SingleFormat.writeB3SingleFormatWithoutParentI
   }
 
   void send(Send send, Destination destination, Object message) {
-    Span span = createAndStartProducerSpan(destination, this);
+    Span span = handleProduce(destination, this);
     final CompletionListener oldCompletionListener = getAsync();
     if (oldCompletionListener != null) {
       delegate.setAsync(TracingCompletionListener.create(oldCompletionListener, span, current));
@@ -331,5 +355,33 @@ import static brave.propagation.B3SingleFormat.writeB3SingleFormatWithoutParentI
 
   @Override public Destination getJMSReplyTo() {
     return delegate.getJMSReplyTo();
+  }
+
+  static class JmsProducerAdapter implements MessageProducerAdapter<JMSProducer> {
+    final JmsTracing jmsTracing;
+
+    JmsProducerAdapter(JmsTracing jmsTracing) {
+      this.jmsTracing = jmsTracing;
+    }
+
+    static JmsProducerAdapter create(JmsTracing jmsTracing) {
+      return new JmsProducerAdapter(jmsTracing);
+    }
+
+    @Override public String operation(JMSProducer message) {
+      return "send";
+    }
+
+    @Override public String identifier(JMSProducer message) {
+      return message.getJMSCorrelationID();
+    }
+
+    //@Override public void clearPropagation(JMSProducer message) {
+    //  PropertyFilter.JMS_PRODUCER.filterProperties(message, jmsTracing.propagationKeys);
+    //}
+
+    @Override public String identifierTagKey() {
+      return "jms.correlation_id";
+    }
   }
 }

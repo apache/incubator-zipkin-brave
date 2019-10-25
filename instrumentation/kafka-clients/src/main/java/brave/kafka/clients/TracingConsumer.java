@@ -15,8 +15,9 @@ package brave.kafka.clients;
 
 import brave.Span;
 import brave.Tracing;
-import brave.propagation.TraceContext.Injector;
-import brave.propagation.TraceContextOrSamplingFlags;
+import brave.messaging.ChannelAdapter;
+import brave.messaging.MessageConsumerAdapter;
+import brave.messaging.MessagingConsumerHandler;
 import java.time.Duration;
 import java.util.Collection;
 import java.util.LinkedHashMap;
@@ -36,19 +37,19 @@ import org.apache.kafka.common.Metric;
 import org.apache.kafka.common.MetricName;
 import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
-import org.apache.kafka.common.header.Headers;
 
 /**
  * Kafka Consumer decorator. Read records headers to create and complete a child of the incoming
  * producers span if possible.
  */
-final class TracingConsumer<K, V> implements Consumer<K, V> {
+final class TracingConsumer<K, V>
+  extends MessagingConsumerHandler<Consumer<K, V>, ConsumerRecord<K, V>, ConsumerRecord<K, V>>
+  implements Consumer<K, V> {
 
-  final Consumer<K, V> delegate;
   final KafkaTracing kafkaTracing;
   final Tracing tracing;
-  final Injector<Headers> injector;
   final String remoteServiceName;
+
   // replicate org.apache.kafka.clients.consumer.internals.NoOpConsumerRebalanceListener behaviour
   static final ConsumerRebalanceListener NO_OP_CONSUMER_REBALANCE_LISTENER =
     new ConsumerRebalanceListener() {
@@ -60,10 +61,14 @@ final class TracingConsumer<K, V> implements Consumer<K, V> {
     };
 
   TracingConsumer(Consumer<K, V> delegate, KafkaTracing kafkaTracing) {
-    this.delegate = delegate;
+    super(delegate,
+      kafkaTracing.msgTracing,
+      KafkaConsumerAdapter.create(kafkaTracing),
+      KafkaConsumerAdapter.create(kafkaTracing),
+      kafkaTracing.consumerRecordExtractor(),
+      kafkaTracing.consumerRecordInjector());
     this.kafkaTracing = kafkaTracing;
-    this.tracing = kafkaTracing.tracing;
-    this.injector = kafkaTracing.injector;
+    this.tracing = kafkaTracing.msgTracing.tracing();
     this.remoteServiceName = kafkaTracing.remoteServiceName;
   }
 
@@ -80,43 +85,10 @@ final class TracingConsumer<K, V> implements Consumer<K, V> {
     long timestamp = 0L;
     Map<String, Span> consumerSpansForTopic = new LinkedHashMap<>();
     for (TopicPartition partition : records.partitions()) {
-      String topic = partition.topic();
       List<ConsumerRecord<K, V>> recordsInPartition = records.records(partition);
-      for (int i = 0, length = recordsInPartition.size(); i < length; i++) {
-        ConsumerRecord<K, V> record = recordsInPartition.get(i);
-        TraceContextOrSamplingFlags extracted =
-          kafkaTracing.extractAndClearHeaders(record.headers());
-
-        // If we extracted neither a trace context, nor request-scoped data (extra),
-        // make or reuse a span for this topic
-        if (extracted.samplingFlags() != null && extracted.extra().isEmpty()) {
-          Span span = consumerSpansForTopic.get(topic);
-          if (span == null) {
-            span = tracing.tracer().nextSpan(extracted);
-            if (!span.isNoop()) {
-              setConsumerSpan(topic, span);
-              // incur timestamp overhead only once
-              if (timestamp == 0L) {
-                timestamp = tracing.clock(span.context()).currentTimeMicroseconds();
-              }
-              span.start(timestamp);
-            }
-            consumerSpansForTopic.put(topic, span);
-          }
-          injector.inject(span.context(), record.headers());
-        } else { // we extracted request-scoped data, so cannot share a consumer span.
-          Span span = tracing.tracer().nextSpan(extracted);
-          if (!span.isNoop()) {
-            setConsumerSpan(topic, span);
-            // incur timestamp overhead only once
-            if (timestamp == 0L) {
-              timestamp = tracing.clock(span.context()).currentTimeMicroseconds();
-            }
-            span.start(timestamp).finish(timestamp); // span won't be shared by other records
-          }
-          injector.inject(span.context(), record.headers());
-        }
-      }
+      consumerSpansForTopic =
+        handleConsume(recordsInPartition.size() > 0 ? recordsInPartition.get(0) : null,
+          recordsInPartition, consumerSpansForTopic);
     }
     for (Span span : consumerSpansForTopic.values()) span.finish(timestamp);
     return records;
@@ -303,8 +275,40 @@ final class TracingConsumer<K, V> implements Consumer<K, V> {
     delegate.wakeup();
   }
 
-  void setConsumerSpan(String topic, Span span) {
-    span.name("poll").kind(Span.Kind.CONSUMER).tag(KafkaTags.KAFKA_TOPIC_TAG, topic);
-    if (remoteServiceName != null) span.remoteServiceName(remoteServiceName);
+  static class KafkaConsumerAdapter<K, V> implements MessageConsumerAdapter<ConsumerRecord<K, V>>,
+    ChannelAdapter<ConsumerRecord<K, V>> {
+    final KafkaTracing kafkaTracing;
+
+    KafkaConsumerAdapter(KafkaTracing kafkaTracing) {
+      this.kafkaTracing = kafkaTracing;
+    }
+
+    static <K, V> KafkaConsumerAdapter<K, V> create(KafkaTracing kafkaTracing) {
+      return new KafkaConsumerAdapter<>(kafkaTracing);
+    }
+
+    @Override public String channel(ConsumerRecord message) {
+      return message.topic();
+    }
+
+    @Override public String operation(ConsumerRecord message) {
+      return KafkaTracing.CONSUMER_OPERATION;
+    }
+
+    @Override public String identifier(ConsumerRecord message) {
+      return kafkaTracing.recordKey(message.key());
+    }
+
+    @Override public String remoteServiceName(ConsumerRecord message) {
+      return kafkaTracing.remoteServiceName;
+    }
+
+    @Override public String channelTagKey(ConsumerRecord<K, V> message) {
+      return kafkaTracing.channelTagKey(message);
+    }
+
+    @Override public String identifierTagKey() {
+      return kafkaTracing.identifierTagKey();
+    }
   }
 }

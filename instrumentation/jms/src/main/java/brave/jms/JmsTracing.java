@@ -14,14 +14,14 @@
 package brave.jms;
 
 import brave.Span;
-import brave.SpanCustomizer;
 import brave.Tracing;
 import brave.internal.Nullable;
+import brave.messaging.MessagingTracing;
 import brave.propagation.Propagation.Getter;
 import brave.propagation.Propagation.Setter;
 import brave.propagation.TraceContext;
 import brave.propagation.TraceContext.Extractor;
-import brave.propagation.TraceContextOrSamplingFlags;
+import brave.propagation.TraceContext.Injector;
 import java.util.LinkedHashSet;
 import java.util.Set;
 import java.util.logging.Level;
@@ -34,9 +34,7 @@ import javax.jms.JMSException;
 import javax.jms.JMSRuntimeException;
 import javax.jms.Message;
 import javax.jms.MessageListener;
-import javax.jms.Queue;
 import javax.jms.QueueConnection;
-import javax.jms.Topic;
 import javax.jms.TopicConnection;
 import javax.jms.XAConnection;
 import javax.jms.XAConnectionFactory;
@@ -93,12 +91,17 @@ public final class JmsTracing {
   }
 
   public static final class Builder {
-    final Tracing tracing;
+    final MessagingTracing msgTracing;
     String remoteServiceName = "jms";
 
     Builder(Tracing tracing) {
       if (tracing == null) throw new NullPointerException("tracing == null");
-      this.tracing = tracing;
+      this.msgTracing = MessagingTracing.create(tracing);
+    }
+
+    Builder(MessagingTracing msgTracing) {
+      if (msgTracing == null) throw new NullPointerException("msgTracing == null");
+      this.msgTracing = msgTracing;
     }
 
     /**
@@ -114,8 +117,12 @@ public final class JmsTracing {
     }
   }
 
-  final Tracing tracing;
+  final MessagingTracing msgTracing;
   final Extractor<Message> extractor;
+  final Injector<Message> injector;
+  final JmsAdapter.JmsChannelAdapter channelAdapter;
+  final JmsAdapter.JmsMessageConsumerAdapter consumerMessageAdapter;
+  final JmsAdapter.JmsMessageProducerAdapter producerMessageAdapter;
   final String remoteServiceName;
   final Set<String> propagationKeys;
 
@@ -123,10 +130,23 @@ public final class JmsTracing {
   static volatile Logger logger;
 
   JmsTracing(Builder builder) { // intentionally hidden constructor
-    this.tracing = builder.tracing;
-    this.extractor = tracing.propagation().extractor(GETTER);
+    this.msgTracing = builder.msgTracing;
+    this.extractor = msgTracing.tracing().propagation().extractor(GETTER);
     this.remoteServiceName = builder.remoteServiceName;
-    this.propagationKeys = new LinkedHashSet<>(tracing.propagation().keys());
+    this.propagationKeys = new LinkedHashSet<>(msgTracing.tracing().propagation().keys());
+    this.consumerMessageAdapter = JmsAdapter.JmsMessageConsumerAdapter.create(this);
+    this.channelAdapter = JmsAdapter.JmsChannelAdapter.create(this);
+    this.producerMessageAdapter = JmsAdapter.JmsMessageProducerAdapter.create(this);
+    this.injector = new Injector<Message>() {
+      @Override public void inject(TraceContext traceContext, Message carrier) {
+        setNextParent(carrier, traceContext);
+      }
+
+      @Override
+      public String toString() {
+        return "Message::setStringProperty(\"b3\",singleHeaderFormatWithoutParent)";
+      }
+    };
   }
 
   public Connection connection(Connection connection) {
@@ -200,23 +220,17 @@ public final class JmsTracing {
    * one couldn't be extracted.
    */
   public Span nextSpan(Message message) {
-    TraceContextOrSamplingFlags extracted = extractAndClearMessage(message);
-    Span result = tracing.tracer().nextSpan(extracted);
-
-    // When an upstream context was not present, lookup keys are unlikely added
-    if (extracted.context() == null && !result.isNoop()) {
-      tagQueueOrTopic(message, result);
-    }
-    return result;
+    return msgTracing.nextSpan(channelAdapter, consumerMessageAdapter, extractor, message,
+      destination(message));
   }
 
-  TraceContextOrSamplingFlags extractAndClearMessage(Message message) {
-    TraceContextOrSamplingFlags extracted = extractor.extract(message);
-    // Clear propagation regardless of extraction as JMS requires clearing as a means to make the
-    // message writable
-    PropertyFilter.filterProperties(message, propagationKeys);
-    return extracted;
-  }
+  //TraceContextOrSamplingFlags extractAndClearMessage(Message message) {
+  //  TraceContextOrSamplingFlags extracted = extractor.extract(message);
+  //  // Clear propagation regardless of extraction as JMS requires clearing as a means to make the
+  //  // message writable
+  //  PropertyFilter.MESSAGE.filterProperties(message, propagationKeys);
+  //  return extracted;
+  //}
 
   /**
    * We currently serialize the context as a "b3" message property. We can't add the context as an
@@ -241,23 +255,6 @@ public final class JmsTracing {
       log(e, "error destination of message {0}", message, null);
     }
     return null;
-  }
-
-  void tagQueueOrTopic(Message message, SpanCustomizer span) {
-    Destination destination = destination(message);
-    if (destination != null) tagQueueOrTopic(destination, span);
-  }
-
-  void tagQueueOrTopic(Destination destination, SpanCustomizer span) {
-    try {
-      if (destination instanceof Queue) {
-        span.tag(JMS_QUEUE, ((Queue) destination).getQueueName());
-      } else if (destination instanceof Topic) {
-        span.tag(JMS_TOPIC, ((Topic) destination).getTopicName());
-      }
-    } catch (JMSException e) {
-      log(e, "error getting destination name from {0}", destination, null);
-    }
   }
 
   /**

@@ -17,7 +17,9 @@ import brave.Span;
 import brave.Tracer;
 import brave.Tracer.SpanInScope;
 import brave.Tracing;
+import brave.messaging.ChannelAdapter;
 import brave.propagation.TraceContextOrSamplingFlags;
+import javax.jms.Destination;
 import javax.jms.Message;
 import javax.jms.MessageListener;
 
@@ -46,14 +48,16 @@ final class TracingMessageListener implements MessageListener {
   final Tracer tracer;
   final String remoteServiceName;
   final boolean addConsumerSpan;
+  final ChannelAdapter<Destination> channelAdapter;
 
   TracingMessageListener(MessageListener delegate, JmsTracing jmsTracing, boolean addConsumerSpan) {
     this.delegate = delegate;
     this.jmsTracing = jmsTracing;
-    this.tracing = jmsTracing.tracing;
-    this.tracer = jmsTracing.tracing.tracer();
+    this.tracing = jmsTracing.msgTracing.tracing();
+    this.tracer = jmsTracing.msgTracing.tracing().tracer();
     this.remoteServiceName = jmsTracing.remoteServiceName;
     this.addConsumerSpan = addConsumerSpan;
+    channelAdapter = JmsAdapter.JmsChannelAdapter.create(jmsTracing);
   }
 
   @Override public void onMessage(Message message) {
@@ -70,7 +74,7 @@ final class TracingMessageListener implements MessageListener {
 
   Span startMessageListenerSpan(Message message) {
     if (!addConsumerSpan) return jmsTracing.nextSpan(message).name("on-message").start();
-    TraceContextOrSamplingFlags extracted = jmsTracing.extractAndClearMessage(message);
+    TraceContextOrSamplingFlags extracted = jmsTracing.extractor.extract(message);
 
     // JMS has no visibility of the incoming message, which incidentally could be local!
     Span consumerSpan = tracer.nextSpan(extracted).kind(CONSUMER).name("receive");
@@ -80,7 +84,8 @@ final class TracingMessageListener implements MessageListener {
       long timestamp = tracing.clock(consumerSpan.context()).currentTimeMicroseconds();
       consumerSpan.start(timestamp);
       if (remoteServiceName != null) consumerSpan.remoteServiceName(remoteServiceName);
-      jmsTracing.tagQueueOrTopic(message, consumerSpan);
+      jmsTracing.msgTracing.consumerParser()
+        .channel(channelAdapter, jmsTracing.destination(message), consumerSpan);
       long consumerFinish = timestamp + 1L; // save a clock reading
       consumerSpan.finish(consumerFinish);
 

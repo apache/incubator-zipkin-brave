@@ -15,16 +15,14 @@ package brave.kafka.clients;
 
 import brave.Span;
 import brave.Tracing;
-import brave.propagation.B3Propagation;
 import brave.propagation.CurrentTraceContext;
-import brave.propagation.ExtraFieldPropagation;
 import brave.propagation.Propagation;
 import brave.propagation.TraceContext;
 import brave.propagation.TraceContextOrSamplingFlags;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.junit.Test;
 
-import static brave.kafka.clients.KafkaPropagation.GETTER;
+import static brave.kafka.clients.KafkaPropagation.HEADERS_GETTER;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -33,6 +31,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 public class KafkaTracingTest extends BaseTracingTest {
+
   @Test public void nextSpan_prefers_b3_header() {
     fakeRecord.headers().add("b3", "0000000000000001-0000000000000002-1".getBytes(UTF_8));
 
@@ -57,19 +56,6 @@ public class KafkaTracingTest extends BaseTracingTest {
 
   @Test public void nextSpan_should_create_span_if_no_headers() {
     assertThat(kafkaTracing.nextSpan(fakeRecord)).isNotNull();
-  }
-
-  @Test public void nextSpan_should_create_span_with_extra_keys() {
-    tracing = Tracing.newBuilder()
-      .propagationFactory(
-        ExtraFieldPropagation.newFactory(B3Propagation.FACTORY, "user-id"))
-      .build();
-    kafkaTracing = KafkaTracing.newBuilder(tracing).build();
-    addB3Headers(fakeRecord);
-    fakeRecord.headers().add("user-id", "user1".getBytes());
-
-    Span span = kafkaTracing.nextSpan(fakeRecord);
-    assertThat(ExtraFieldPropagation.get(span.context(), "user-id")).contains("user1");
   }
 
   @Test public void nextSpan_should_tag_topic_and_key_when_no_incoming_context() {
@@ -114,12 +100,13 @@ public class KafkaTracingTest extends BaseTracingTest {
       .isEmpty();
   }
 
-  @Test public void nextSpan_should_clear_propagation_headers() {
-    addB3Headers(fakeRecord);
-
-    kafkaTracing.nextSpan(fakeRecord);
-    assertThat(fakeRecord.headers().toArray()).isEmpty();
-  }
+  //FIXME remove if we don't have to clear propagation
+  //@Test public void nextSpan_should_clear_propagation_headers() {
+  //  addB3Headers(fakeRecord);
+  //
+  //  kafkaTracing.nextSpan(fakeRecord);
+  //  assertThat(fakeRecord.headers().toArray()).isEmpty();
+  //}
 
   @Test public void nextSpan_should_not_clear_other_headers() {
     fakeRecord.headers().add("foo", new byte[0]);
@@ -131,7 +118,7 @@ public class KafkaTracingTest extends BaseTracingTest {
   @Test public void failsFastIfPropagationDoesntSupportSingleHeader() {
     // Fake propagation because B3 by default does support single header extraction!
     Propagation<String> propagation = mock(Propagation.class);
-    when(propagation.extractor(GETTER)).thenReturn(carrier -> {
+    when(propagation.extractor(HEADERS_GETTER)).thenReturn(carrier -> {
       assertThat(carrier.lastHeader("b3")).isNotNull(); // sanity check
       return TraceContextOrSamplingFlags.EMPTY; // pretend we couldn't parse
     });

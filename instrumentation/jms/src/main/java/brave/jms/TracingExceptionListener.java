@@ -21,13 +21,13 @@ import javax.jms.JMSException;
 
 final class TracingExceptionListener {
   static ExceptionListener create(JmsTracing jmsTracing) {
-    return new TagError(jmsTracing.tracing.tracer());
+    return new TagError(jmsTracing.msgTracing.tracing().tracer());
   }
 
   static ExceptionListener create(ExceptionListener delegate, JmsTracing jmsTracing) {
     if (delegate == null) throw new NullPointerException("exceptionListener == null");
     if (delegate instanceof TagError) return delegate;
-    return new DelegateAndTagError(delegate, jmsTracing.tracing.tracer());
+    return new DelegateAndTagError(delegate, jmsTracing.msgTracing.tracing().tracer());
   }
 
   static class TagError implements ExceptionListener {

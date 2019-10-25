@@ -29,7 +29,7 @@ public class TracingCallbackTest extends BaseTracingTest {
     Span span = tracing.tracer().nextSpan(TraceContextOrSamplingFlags.NOT_SAMPLED);
 
     Callback delegate = mock(Callback.class);
-    Callback tracingCallback = TracingCallback.create(delegate, span, current);
+    Callback tracingCallback = TracingProducer.TracingCallback.create(delegate, span, current);
 
     assertThat(tracingCallback).isSameAs(delegate);
   }
@@ -37,7 +37,7 @@ public class TracingCallbackTest extends BaseTracingTest {
   @Test public void on_completion_should_finish_span() {
     Span span = tracing.tracer().nextSpan().start();
 
-    Callback tracingCallback = TracingCallback.create(null, span, current);
+    Callback tracingCallback = TracingProducer.TracingCallback.create(null, span, current);
     tracingCallback.onCompletion(createRecordMetadata(), null);
 
     assertThat(spans.getFirst()).isNotNull();
@@ -46,7 +46,7 @@ public class TracingCallbackTest extends BaseTracingTest {
   @Test public void on_completion_should_tag_if_exception() {
     Span span = tracing.tracer().nextSpan().start();
 
-    Callback tracingCallback = TracingCallback.create(null, span, current);
+    Callback tracingCallback = TracingProducer.TracingCallback.create(null, span, current);
     tracingCallback.onCompletion(null, new Exception("Test exception"));
 
     assertThat(spans.getFirst().tags())
@@ -57,7 +57,7 @@ public class TracingCallbackTest extends BaseTracingTest {
     Span span = tracing.tracer().nextSpan().start();
 
     Callback delegate = mock(Callback.class);
-    Callback tracingCallback = TracingCallback.create(delegate, span, current);
+    Callback tracingCallback = TracingProducer.TracingCallback.create(delegate, span, current);
     RecordMetadata md = createRecordMetadata();
     tracingCallback.onCompletion(md, null);
 
@@ -70,14 +70,15 @@ public class TracingCallbackTest extends BaseTracingTest {
 
     Callback delegate = (metadata, exception) -> assertThat(current.get()).isSameAs(span.context());
 
-    TracingCallback.create(delegate, span, current).onCompletion(createRecordMetadata(), null);
+    TracingProducer.TracingCallback.create(delegate, span, current)
+      .onCompletion(createRecordMetadata(), null);
   }
 
   @Test public void on_completion_should_forward_then_tag_if_exception() {
     Span span = tracing.tracer().nextSpan().start();
 
     Callback delegate = mock(Callback.class);
-    Callback tracingCallback = TracingCallback.create(delegate, span, current);
+    Callback tracingCallback = TracingProducer.TracingCallback.create(delegate, span, current);
     RecordMetadata md = createRecordMetadata();
     Exception e = new Exception("Test exception");
     tracingCallback.onCompletion(md, e);
