@@ -14,6 +14,7 @@
 package brave.spring.rabbit;
 
 import brave.Tracing;
+import brave.messaging.MessagingTracing;
 import brave.propagation.B3SingleFormat;
 import brave.propagation.CurrentTraceContext.Scope;
 import brave.propagation.ThreadLocalCurrentTraceContext;
@@ -54,6 +55,31 @@ public class TracingMessagePostProcessorTest {
     assertThat(spans.get(0).parentId()).isEqualTo(parent.spanIdString());
     Map<String, Object> headers = postProcessMessage.getMessageProperties().getHeaders();
     assertThat(headers.get("b3").toString()).endsWith("-" + spans.get(0).id() + "-1");
+  }
+
+  @Test public void should_create_newTrace_whenFlagEnabled() {
+    tracingMessagePostProcessor = new TracingMessagePostProcessor(
+        SpringRabbitTracing
+            .newBuilder(
+                MessagingTracing.newBuilder(tracing)
+                    .newTraceOnReceive(true)
+                    .build())
+            .remoteServiceName("my-exchange")
+            .build()
+    );
+    TraceContext parent = TraceContext.newBuilder().traceId(1L).spanId(1L).sampled(true).build();
+    Message message = MessageBuilder.withBody(new byte[0]).build();
+    message.getMessageProperties().setHeader("b3", B3SingleFormat.writeB3SingleFormat(parent));
+
+    Message postProcessMessage = tracingMessagePostProcessor.postProcessMessage(message);
+
+    Span span = spans.get(0);
+    assertThat(span.traceId()).isNotEqualTo(parent.traceIdString());
+    assertThat(span.parentId()).isNull();
+    assertThat(span.tags().get("parent.trace_id")).isEqualTo(parent.traceIdString());
+    assertThat(span.tags().get("parent.span_id")).isEqualTo(parent.spanIdString());
+    Map<String, Object> headers = postProcessMessage.getMessageProperties().getHeaders();
+    assertThat(headers.get("b3").toString()).endsWith("-" + span.id() + "-1");
   }
 
   @Test public void should_prefer_current_span() {

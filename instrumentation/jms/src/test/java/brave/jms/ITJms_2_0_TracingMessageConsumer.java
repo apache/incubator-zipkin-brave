@@ -18,8 +18,11 @@ import brave.messaging.MessagingTracing;
 import brave.sampler.Sampler;
 import javax.jms.JMSConsumer;
 import javax.jms.JMSContext;
+import javax.jms.Session;
+import javax.jms.TextMessage;
 import org.junit.Test;
 import org.junit.rules.TestName;
+import zipkin2.Span;
 
 import static brave.messaging.MessagingRequestMatchers.channelNameEquals;
 import static org.assertj.core.api.Assertions.assertThat;

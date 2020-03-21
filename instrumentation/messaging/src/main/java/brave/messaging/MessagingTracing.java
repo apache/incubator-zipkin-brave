@@ -78,6 +78,16 @@ public class MessagingTracing implements Closeable {
     return consumerSampler;
   }
 
+  /**
+   * Returns flag to create a new trace when consuming a message with an existing trace context, or
+   * to continue.
+   *
+   * @since 5.10 (potentially)
+   */
+  public boolean newTraceOnReceive() {
+    return newTraceOnReceive;
+  }
+
   public Builder toBuilder() {
     return new Builder(this);
   }
@@ -86,10 +96,13 @@ public class MessagingTracing implements Closeable {
   final SamplerFunction<MessagingRequest> producerSampler;
   final SamplerFunction<MessagingRequest> consumerSampler;
 
+  final boolean newTraceOnReceive;
+
   MessagingTracing(Builder builder) {
     this.tracing = builder.tracing;
     this.producerSampler = builder.producerSampler;
     this.consumerSampler = builder.consumerSampler;
+    this.newTraceOnReceive = builder.newTraceOnReceive;
     // assign current IFF there's no instance already current
     CURRENT.compareAndSet(null, this);
   }
@@ -98,6 +111,7 @@ public class MessagingTracing implements Closeable {
     Tracing tracing;
     SamplerFunction<MessagingRequest> producerSampler;
     SamplerFunction<MessagingRequest> consumerSampler;
+    boolean newTraceOnReceive = false;
 
     Builder(Tracing tracing) {
       if (tracing == null) throw new NullPointerException("tracing == null");
@@ -110,6 +124,7 @@ public class MessagingTracing implements Closeable {
       this.tracing = source.tracing;
       this.producerSampler = source.producerSampler;
       this.consumerSampler = source.consumerSampler;
+      this.newTraceOnReceive = source.newTraceOnReceive;
     }
 
     /** @see MessagingTracing#tracing() */
@@ -126,10 +141,20 @@ public class MessagingTracing implements Closeable {
       return this;
     }
 
-    /** @see MessagingTracing#consumerSampler() */
+    /**
+     * @see MessagingTracing#consumerSampler()
+     */
     public Builder consumerSampler(SamplerFunction<MessagingRequest> consumerSampler) {
       if (consumerSampler == null) throw new NullPointerException("consumerSampler == null");
       this.consumerSampler = consumerSampler;
+      return this;
+    }
+
+    /**
+     * @see MessagingTracing#newTraceOnReceive()
+     */
+    public Builder newTraceOnReceive(boolean newTraceOnReceive) {
+      this.newTraceOnReceive = newTraceOnReceive;
       return this;
     }
 

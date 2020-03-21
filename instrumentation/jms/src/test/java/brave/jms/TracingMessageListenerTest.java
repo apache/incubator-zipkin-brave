@@ -14,6 +14,7 @@
 package brave.jms;
 
 import brave.Tracing;
+import brave.messaging.MessagingTracing;
 import brave.propagation.ThreadLocalCurrentTraceContext;
 import java.util.ArrayList;
 import java.util.List;
@@ -48,7 +49,10 @@ public class TracingMessageListenerTest {
     .currentTraceContext(ThreadLocalCurrentTraceContext.create())
     .spanReporter(spans::add)
     .build();
-  JmsTracing jmsTracing = JmsTracing.newBuilder(tracing)
+  MessagingTracing messagingTracing = MessagingTracing.newBuilder(tracing)
+    .newTraceOnReceive(false)
+    .build();
+  JmsTracing jmsTracing = JmsTracing.newBuilder(messagingTracing)
     .remoteServiceName("my-service")
     .build();
 
@@ -227,6 +231,33 @@ public class TracingMessageListenerTest {
       .filteredOn(span -> span.kind() == CONSUMER)
       .extracting(Span::parentId)
       .contains(SPAN_ID);
+  }
+
+  @Test public void creates_newTrace_on_consumer() throws Exception {
+    MessagingTracing messagingTracing = MessagingTracing.newBuilder(tracing)
+      .newTraceOnReceive(true)
+      .build();
+    JmsTracing jmsTracing = JmsTracing.newBuilder(messagingTracing)
+      .remoteServiceName("my-service")
+      .build();
+
+    MessageListener delegate = mock(MessageListener.class);
+    MessageListener tracingMessageListener =
+      new TracingMessageListener(delegate, jmsTracing, true);
+
+    ActiveMQTextMessage message = new ActiveMQTextMessage();
+    SETTER.put(message, "b3", TRACE_ID + "-" + SPAN_ID + "-" + SAMPLED);
+
+    doNothing().when(delegate).onMessage(message);
+    tracingMessageListener.onMessage(message);
+
+    // clearing headers ensures later work doesn't try to use the old parent
+    assertThat(message.getProperties()).isEmpty();
+
+    assertThat(spans)
+      .filteredOn(span -> span.kind() == CONSUMER)
+      .extracting(Span::parentId)
+      .doesNotContain(SPAN_ID);
   }
 
   @Test public void listener_continues_parent_trace_single_header() throws Exception {

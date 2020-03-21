@@ -13,6 +13,7 @@
  */
 package brave.kafka.clients;
 
+import brave.messaging.MessagingTracing;
 import java.util.HashMap;
 import java.util.Map;
 import org.apache.kafka.clients.consumer.Consumer;
@@ -120,6 +121,26 @@ public class TracingConsumerTest extends BaseTracingTest {
       .allSatisfy(e -> {
         assertThat(e.getKey()).isEqualTo("b3");
         assertThat(e.getValue()).startsWith(TRACE_ID);
+      });
+  }
+
+  @Test public void should_create_newTrace_whenFlagEnabled() {
+    MessagingTracing messagingTracing = MessagingTracing.newBuilder(tracing).newTraceOnReceive(true).build();
+    kafkaTracing = KafkaTracing.newBuilder(messagingTracing).build();
+
+    addB3MultiHeaders(fakeRecord);
+    consumer.addRecord(fakeRecord);
+
+    Consumer<String, String> tracingConsumer = kafkaTracing.consumer(consumer);
+    ConsumerRecords<String, String> poll = tracingConsumer.poll(10);
+
+    assertThat(poll)
+      .extracting(ConsumerRecord::headers)
+      .flatExtracting(TracingConsumerTest::lastHeaders)
+      .hasSize(1)
+      .allSatisfy(e -> {
+        assertThat(e.getKey()).isEqualTo("b3");
+        assertThat(e.getValue()).doesNotStartWith(TRACE_ID);
       });
   }
 

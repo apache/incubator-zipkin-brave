@@ -204,6 +204,34 @@ public final class KafkaTracing {
     return tracer.nextSpan(extracted);
   }
 
+  Span newMessagingTrace(
+    SamplerFunction<MessagingRequest> sampler,
+    MessagingRequest request,
+    TraceContextOrSamplingFlags extracted
+  ) {
+    String traceId = null, spanId = null;
+    if (extracted.context() != null) {
+      traceId = extracted.context().traceIdString();
+      if (extracted.context().spanIdString() != null) {
+        spanId = extracted.context().spanIdString();
+      }
+    }
+    Boolean sampled = extracted.sampled();
+    if (sampled == null && (sampled = sampler.trySample(request)) != null) {
+      extracted = extracted.sampled(sampled.booleanValue());
+    }
+    Span span;
+    if (extracted.samplingFlags() != null) {
+      extracted = TraceContextOrSamplingFlags.create(extracted.samplingFlags());
+      span = tracer.nextSpan(extracted);
+    } else {
+      span = tracer.newTrace();
+    }
+    if (traceId != null) span.tag("parent.trace_id", traceId);
+    if (spanId != null) span.tag("parent.span_id", spanId);
+    return span;
+  }
+
   // We can't just skip clearing headers we use because we might inject B3 single, yet have stale B3
   // multi, or visa versa.
   void clearHeaders(Headers headers) {

@@ -113,6 +113,7 @@ public final class JmsTracing {
   }
 
   final Tracing tracing;
+  final MessagingTracing messagingTracing;
   final Tracer tracer;
   final Extractor<MessageProducerRequest> messageProducerExtractor;
   final Injector<MessageProducerRequest> messageProducerInjector;
@@ -132,6 +133,7 @@ public final class JmsTracing {
   JmsTracing(Builder builder) { // intentionally hidden constructor
     this.tracing = builder.messagingTracing.tracing();
     this.tracer = tracing.tracer();
+    this.messagingTracing = builder.messagingTracing;
     Propagation<String> propagation = tracing.propagation();
     if (JmsTypes.HAS_JMS_PRODUCER) {
       this.jmsProducerExtractor = propagation.extractor(JMSProducerRequest.GETTER);
@@ -256,6 +258,33 @@ public final class JmsTracing {
       extracted = extracted.sampled(sampled.booleanValue());
     }
     return tracer.nextSpan(extracted);
+  }
+  Span newMessagingTrace(
+    SamplerFunction<MessagingRequest> sampler,
+    MessagingRequest request,
+    TraceContextOrSamplingFlags extracted
+  ) {
+    String traceId = null, spanId = null;
+    if (extracted.context() != null) {
+      traceId = extracted.context().traceIdString();
+      if (extracted.context().spanIdString() != null) {
+        spanId = extracted.context().spanIdString();
+      }
+    }
+    Boolean sampled = extracted.sampled();
+    if (sampled == null && (sampled = sampler.trySample(request)) != null) {
+      extracted = extracted.sampled(sampled.booleanValue());
+    }
+    Span span;
+    if (extracted.samplingFlags() != null) {
+      extracted = TraceContextOrSamplingFlags.create(extracted.samplingFlags());
+      span = tracer.nextSpan(extracted);
+    } else {
+      span = tracer.newTrace();
+    }
+    if (traceId != null) span.tag("parent.trace_id", traceId);
+    if (spanId != null) span.tag("parent.span_id", spanId);
+    return span;
   }
 
   void tagQueueOrTopic(MessagingRequest request, SpanCustomizer span) {

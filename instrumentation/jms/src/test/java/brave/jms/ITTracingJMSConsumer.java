@@ -124,6 +124,23 @@ public class ITTracingJMSConsumer extends JmsTest {
       .containsEntry("b3", "false"); // b3 header not leaked to listener
   }
 
+  @Test public void receive_startsNewTrace_whenFlagEnabled() throws Exception {
+    MessagingTracing messagingTracing = MessagingTracing.newBuilder(tracing)
+      .newTraceOnReceive(true)
+      .build();
+    jmsTracing = JmsTracing.newBuilder(messagingTracing).build();
+    setupTracedConsumer(jmsTracing);
+    producer = tracedContext.createProducer();
+    producer.send(jms.queue, "foo");
+    consumer.receive();
+    Span producerSpan = takeSpan(), consumerSpan = takeSpan();
+    assertThat(producerSpan.traceId()).isNotEqualTo(consumerSpan.traceId());
+    assertThat(consumerSpan.name()).isEqualTo("receive");
+    assertThat(consumerSpan.parentId()).isNull(); // root span
+    assertThat(consumerSpan.kind()).isEqualTo(Span.Kind.CONSUMER);
+    assertThat(consumerSpan.tags()).containsEntry("jms.queue", jms.queueName);
+  }
+
   @Test public void receive_startsNewTrace() throws Exception {
     receive_startsNewTrace(() -> producer.send(jms.queue, "foo"));
   }

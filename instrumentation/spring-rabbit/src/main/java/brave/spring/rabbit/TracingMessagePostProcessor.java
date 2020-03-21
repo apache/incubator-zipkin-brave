@@ -42,6 +42,7 @@ final class TracingMessagePostProcessor implements MessagePostProcessor {
   final SamplerFunction<MessagingRequest> sampler;
   final Injector<MessageProducerRequest> injector;
   @Nullable final String remoteServiceName;
+  final boolean newTraceOnReceive;
 
   TracingMessagePostProcessor(SpringRabbitTracing springRabbitTracing) {
     this.springRabbitTracing = springRabbitTracing;
@@ -52,6 +53,7 @@ final class TracingMessagePostProcessor implements MessagePostProcessor {
     this.sampler = springRabbitTracing.producerSampler;
     this.injector = springRabbitTracing.producerInjector;
     this.remoteServiceName = springRabbitTracing.remoteServiceName;
+    this.newTraceOnReceive = springRabbitTracing.messagingTracing.newTraceOnReceive();
   }
 
   @Override public Message postProcessMessage(Message message) {
@@ -67,7 +69,9 @@ final class TracingMessagePostProcessor implements MessagePostProcessor {
     if (maybeParent == null) {
       TraceContextOrSamplingFlags extracted =
         springRabbitTracing.extractAndClearHeaders(extractor, request, message);
-      span = springRabbitTracing.nextMessagingSpan(sampler, request, extracted);
+      span = newTraceOnReceive ?
+          springRabbitTracing.newMessagingTrace(sampler, request, extracted) :
+          springRabbitTracing.nextMessagingSpan(sampler, request, extracted);
     } else { // If we have a span in scope assume headers were cleared before
       span = tracer.newChild(maybeParent);
     }

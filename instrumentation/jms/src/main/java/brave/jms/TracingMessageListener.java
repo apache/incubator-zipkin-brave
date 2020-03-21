@@ -55,6 +55,7 @@ final class TracingMessageListener implements MessageListener {
   final SamplerFunction<MessagingRequest> sampler;
   final String remoteServiceName;
   final boolean addConsumerSpan;
+  final boolean newTraceOnReceive;
 
   TracingMessageListener(MessageListener delegate, JmsTracing jmsTracing, boolean addConsumerSpan) {
     this.delegate = delegate;
@@ -66,6 +67,7 @@ final class TracingMessageListener implements MessageListener {
     this.injector = jmsTracing.messageConsumerInjector;
     this.remoteServiceName = jmsTracing.remoteServiceName;
     this.addConsumerSpan = addConsumerSpan;
+    this.newTraceOnReceive = jmsTracing.messagingTracing.newTraceOnReceive();
   }
 
   @Override public void onMessage(Message message) {
@@ -92,8 +94,9 @@ final class TracingMessageListener implements MessageListener {
 
     TraceContextOrSamplingFlags extracted =
       jmsTracing.extractAndClearProperties(extractor, request, message);
-    Span consumerSpan = jmsTracing.nextMessagingSpan(sampler, request, extracted);
-
+    Span consumerSpan = newTraceOnReceive ?
+        jmsTracing.newMessagingTrace(sampler, request, extracted) :
+        jmsTracing.nextMessagingSpan(sampler, request, extracted);
     // JMS has no visibility of the incoming message, which incidentally could be local!
     consumerSpan.kind(CONSUMER).name("receive");
     Span listenerSpan = tracer.newChild(consumerSpan.context());

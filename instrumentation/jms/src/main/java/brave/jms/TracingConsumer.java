@@ -32,6 +32,7 @@ abstract class TracingConsumer<C> {
   final Injector<MessageConsumerRequest> injector;
   final SamplerFunction<MessagingRequest> sampler;
   @Nullable final String remoteServiceName;
+  final boolean newTraceOnReceive;
 
   TracingConsumer(C delegate, JmsTracing jmsTracing) {
     this.delegate = delegate;
@@ -41,6 +42,7 @@ abstract class TracingConsumer<C> {
     this.sampler = jmsTracing.consumerSampler;
     this.injector = jmsTracing.messageConsumerInjector;
     this.remoteServiceName = jmsTracing.remoteServiceName;
+    this.newTraceOnReceive = jmsTracing.messagingTracing.newTraceOnReceive();
   }
 
   void handleReceive(Message message) {
@@ -48,8 +50,10 @@ abstract class TracingConsumer<C> {
     MessageConsumerRequest request = new MessageConsumerRequest(message, destination(message));
 
     TraceContextOrSamplingFlags extracted =
-      jmsTracing.extractAndClearProperties(extractor, request, message);
-    Span span = jmsTracing.nextMessagingSpan(sampler, request, extracted);
+        jmsTracing.extractAndClearProperties(extractor, request, message);
+    Span span = newTraceOnReceive ?
+        jmsTracing.newMessagingTrace(sampler, request, extracted) :
+        jmsTracing.nextMessagingSpan(sampler, request, extracted);
 
     if (!span.isNoop()) {
       span.name("receive").kind(Span.Kind.CONSUMER);

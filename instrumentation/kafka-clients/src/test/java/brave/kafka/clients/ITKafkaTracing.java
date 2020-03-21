@@ -29,7 +29,9 @@ import com.github.charithe.kafka.EphemeralKafkaBroker;
 import com.github.charithe.kafka.KafkaJunitRule;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
@@ -291,6 +293,42 @@ public class ITKafkaTracing {
 
       assertThat(forProcessor.traceIdString()).isEqualTo(consumerSpan.traceId());
     }
+  }
+
+  @Test
+  public void creates_a_newTrace_when_flagEnabled() throws Exception {
+    consumerTracing = KafkaTracing.newBuilder(
+      MessagingTracing.newBuilder(
+        Tracing.newBuilder()
+          .spanReporter(consumerSpans::add)
+          .build())
+        .newTraceOnReceive(true)
+        .build())
+    .singleRootSpanOnReceiveBatch(false)
+    .build();
+    producerTracing = KafkaTracing.create(Tracing.newBuilder()
+      .spanReporter(producerSpans::add)
+      .build());
+
+    producer = createTracingProducer();
+    consumer = createTracingConsumer();
+
+    producer.send(new ProducerRecord<>(testName.getMethodName(), TEST_KEY, TEST_VALUE)).get();
+
+    // intentionally using deprecated method as we are checking the same class in an invoker test
+    // under src/it. If we want to explicitly tests the Duration arg, we will have to subclass.
+    ConsumerRecords<String, String> records = consumer.poll(10_000L);
+
+    assertThat(records).hasSize(1);
+    Span producerSpan = takeSpan(producerSpans);
+    Span consumerSpan = takeSpan(consumerSpans);
+
+    assertThat(producerSpan.traceId()).isNotEqualTo(consumerSpan.traceId());
+    Map<String, String> tags = new LinkedHashMap<>();
+    tags.put("kafka.topic", testName.getMethodName());
+    tags.put("parent.trace_id", producerSpan.traceId());
+    tags.put("parent.span_id", producerSpan.id());
+    assertThat(consumerSpan.tags()).isEqualTo(tags);
   }
 
   @Test public void customSampler_producer() throws Exception {

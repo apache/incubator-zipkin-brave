@@ -17,6 +17,7 @@ import brave.messaging.MessagingRuleSampler;
 import brave.messaging.MessagingTracing;
 import brave.sampler.Sampler;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.Map;
 import javax.jms.BytesMessage;
 import javax.jms.JMSException;
@@ -207,6 +208,33 @@ public class ITJms_1_1_TracingMessageConsumer extends JmsTest {
     assertThat(listenerSpan.tags())
       .hasSize(1) // no redundant copy of consumer tags
       .containsEntry("b3", "false"); // b3 header not leaked to listener
+  }
+
+  @Test public void receive_startsNewTrace_whenFlagEnabled() throws Exception {
+    tracedSession.close();
+    MessagingTracing messagingTracing = MessagingTracing.newBuilder(tracing)
+      .newTraceOnReceive(true)
+      .build();
+    JmsTracing jmsTracing = JmsTracing.newBuilder(messagingTracing).build();
+    Session tracedSession = jmsTracing.connection(jms.connection)
+      .createSession(false, Session.AUTO_ACKNOWLEDGE);
+    MessageConsumer messageConsumer = tracedSession.createConsumer(jms.destination);
+    MessageProducer messageProducer = jms.session.createProducer(jms.destination);
+    String parentId = resetB3PropertyToIncludeParentId(jms);
+    messageProducer.send(message);
+
+    messageConsumer.receive();
+
+    Span consumerSpan = takeSpan();
+    assertThat(consumerSpan.parentId()).isNotEqualTo(parentId);
+    assertThat(consumerSpan.name()).isEqualTo("receive");
+    assertThat(consumerSpan.parentId()).isNull(); // root span
+    assertThat(consumerSpan.kind()).isEqualTo(Span.Kind.CONSUMER);
+    Map<String, String> tags = new HashMap<>();
+    tags.put("jms.queue", jms.destinationName);
+    tags.put("parent.trace_id", parentId);
+    tags.put("parent.span_id", parentId);
+    assertThat(consumerSpan.tags()).isEqualTo(tags);
   }
 
   @Test public void receive_startsNewTrace() throws Exception {
