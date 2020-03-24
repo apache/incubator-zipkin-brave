@@ -14,13 +14,15 @@
 package brave.jms;
 
 import java.util.ArrayList;
-import java.util.Enumeration;
 import java.util.List;
 import java.util.Set;
+import javax.jms.BytesMessage;
+import javax.jms.JMSException;
 import javax.jms.Message;
 
 import static brave.internal.Throwables.propagateIfFatal;
 import static brave.jms.JmsTracing.log;
+import static java.util.Collections.list;
 
 // Similar to https://github.com/apache/camel/blob/b9a3117f19dd19abd2ea8b789c42c3e86fe4c488/components/camel-jms/src/main/java/org/apache/camel/component/jms/JmsMessageHelper.java
 final class PropertyFilter {
@@ -40,28 +42,29 @@ final class PropertyFilter {
   }
 
   static void filterProperties(Message message, Set<String> namesToClear, List<Object> out) {
-    Enumeration<?> names;
+    List<String> names;
     try {
-      names = message.getPropertyNames();
+      names = list(message.getPropertyNames());
     } catch (Throwable t) {
       propagateIfFatal(t);
       log(t, "error getting property names from {0}", message, null);
       return;
     }
-
-    while (names.hasMoreElements()) {
-      String name = (String) names.nextElement();
-      Object value;
-      try {
-        value = message.getObjectProperty(name);
-      } catch (Throwable t) {
-        propagateIfFatal(t);
-        log(t, "error getting property {0} from message {1}", name, message);
-        return;
-      }
-      if (!namesToClear.contains(name) && value != null) {
-        out.add(name);
-        out.add(value);
+    
+    for (String name: names) {
+      if (!namesToClear.contains(name)) {
+        Object value;
+        try {
+          value = message.getObjectProperty(name);
+        } catch (Throwable t) {
+          propagateIfFatal(t);
+          log(t, "error getting property {0} from message {1}", name, message);
+          return;
+        }
+        if (value != null) {
+          out.add(name);
+          out.add(value);
+        }
       }
     }
 
@@ -74,6 +77,31 @@ final class PropertyFilter {
       return;
     }
 
+    // workaround for ActiveMQBytesMessage
+    if (message instanceof BytesMessage) { // BytesMessage requires clearing the body before reset properties otherwise it fails with MessageNotWriteableException
+      resetBytesMessageProperties(message, out);
+    } else {
+      resetProperties(message, out);
+    }
+  }
+
+  private static void resetBytesMessageProperties( Message message, List<Object> out ) {
+    try {
+      BytesMessage bytesMessage = (BytesMessage) message;
+      byte[] body = new byte[(int) bytesMessage.getBodyLength()];
+      bytesMessage.reset();
+      bytesMessage.readBytes(body);
+      // setObjectProperty on BytesMessage requires clearing the body otherwise it fails with MessageNotWriteableException
+      message.clearBody();
+      resetProperties(message, out);
+      bytesMessage.writeBytes(body);
+    } catch (JMSException e) {
+      propagateIfFatal(e);
+      log(e, "unable to reset BytesMessage body {0}", message, e);
+    }
+  }
+
+  private static void resetProperties(Message message, List<Object> out) {
     for (int i = 0, length = out.size(); i < length; i += 2) {
       String name = out.get(i).toString();
       try {

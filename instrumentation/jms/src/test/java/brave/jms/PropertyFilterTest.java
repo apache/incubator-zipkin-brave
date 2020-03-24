@@ -13,6 +13,7 @@
  */
 package brave.jms;
 
+import java.util.Arrays;
 import java.util.Collections;
 import javax.jms.JMSException;
 import javax.jms.Message;
@@ -70,7 +71,7 @@ public class PropertyFilterTest {
 
   @Test public void filterProperties_message_passesFatalOnSetException() throws Exception {
     Message message = mock(Message.class);
-    when(message.getPropertyNames()).thenReturn(Collections.enumeration(Collections.singletonList("JMS_SQS_DeduplicationId")));
+    when(message.getPropertyNames()).thenReturn(Collections.enumeration(Arrays.asList("JMS_SQS_DeduplicationId", "b3")));
     when(message.getObjectProperty("JMS_SQS_DeduplicationId")).thenReturn("");
     doThrow(new LinkageError()).when(message).setObjectProperty(anyString(), eq(""));
 

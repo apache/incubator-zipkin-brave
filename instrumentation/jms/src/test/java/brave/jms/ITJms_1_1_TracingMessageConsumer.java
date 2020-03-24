@@ -273,7 +273,7 @@ public class ITJms_1_1_TracingMessageConsumer extends ITJms {
     receive_resumesTrace(() -> messageProducer.send(message), messageConsumer);
   }
 
-  @Test(expected = ComparisonFailure.class) // TODO: https://github.com/openzipkin/brave/issues/967
+  @Test //(expected = ComparisonFailure.class) // TODO: https://github.com/openzipkin/brave/issues/967
   public void receive_resumesTrace_bytes() throws Exception {
     receive_resumesTrace(() -> messageProducer.send(bytesMessage), messageConsumer);
   }
