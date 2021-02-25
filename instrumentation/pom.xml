@@ -39,6 +39,7 @@
     <module>grpc</module>
     <module>httpasyncclient</module>
     <module>httpclient</module>
+    <module>httpclient5</module>
     <module>jaxrs2</module>
     <module>jersey-server</module>
     <module>jms</module>
