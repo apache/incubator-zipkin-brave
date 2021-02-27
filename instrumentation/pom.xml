@@ -53,6 +53,7 @@
     <module>servlet</module>
     <module>sparkjava</module>
     <module>spring-rabbit</module>
+    <module>spring-messaging</module>
     <module>spring-web</module>
     <module>spring-webmvc</module>
     <module>kafka-clients</module>
