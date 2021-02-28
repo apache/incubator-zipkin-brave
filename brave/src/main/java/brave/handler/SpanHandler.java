@@ -30,11 +30,11 @@ import java.lang.ref.WeakReference;
  *
  * <p>A {@link TraceContext} could be recorded twice, for example, if a long operation
  * began, called {@link Span#flush()} (recording 1) and later called {@link Span#finish()}
- * (recording 2). A {@link TraceContext} could be abrupted by garbage collection resulting in a
+ * (recording 2). A {@link TraceContext} could be disrupted by garbage collection resulting in a
  * {@link Cause#ABANDONED}. A user could even {@linkplain Cause#ABANDONED abandon} a span without
  * recording anything!
  *
- * <p>Collectors that process finished spans will need to look at the {link Cause} and {@link
+ * <p>Collectors that process finished spans will need to look at the {@link Cause} and {@link
  * MutableSpan} collected. For example, {@link Cause#FINISHED} is usually a good enough heuristic to
  * find complete spans.
  *
